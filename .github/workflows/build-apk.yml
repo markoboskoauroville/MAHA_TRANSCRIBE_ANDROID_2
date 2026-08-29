@@ -1,0 +1,250 @@
+# PINNED BY COMMIT, NEVER BY TAG.
+#
+# A tag is mutable: whoever owns the action can move v4 to point at anything, and this workflow
+# runs with a token that can write to this repository. In the GhostAction compromise of early
+# 2025, repositories pinned to a moving tag pulled a modified action automatically and their CI
+# secrets were exfiltrated, with no compromise of the account required, only of somebody else's.
+#
+# Every SHA below is the one already resolved and in use in TTT_MINI and MINIMALIST_STOPWATCH,
+# whose comments record that they were resolved from the named tags on 23.8.2026. To update one:
+# read the action's release notes, resolve the new tag to a SHA yourself, and change the SHA and
+# the comment in one commit, so the comment can never quietly disagree with what actually runs.
+#
+# The Gradle distribution is pinned too, by sha256, in gradle/wrapper/gradle-wrapper.properties.
+
+name: Build Maha Transcribe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G1 — PROVENANCE. Is this artefact what it claims to be, built from what it claims?
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G1 — provenance"
+        id: provenance
+        run: |
+          set -euo pipefail
+          V=$(grep -E '^appVersion=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "version: $V"
+          case "$V" in ''|*[!0-9]*) echo "appVersion is not a whole number"; exit 1;; esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "commit: $(git rev-parse HEAD)  branch: ${GITHUB_REF_NAME}"
+          DIRTY=$(git status --porcelain | wc -l)
+          echo "uncommitted or untracked files: $DIRTY"
+          [ "$DIRTY" = "0" ]
+          echo "built by: run ${GITHUB_RUN_NUMBER} on ${RUNNER_OS}, not on a desk"
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G2, first half — THE HISTORY, not just the diff. A key committed months ago and removed
+      # last week is absent from today's diff and present in every build made from that history.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G2 — scan the whole history for key shapes"
+        run: |
+          set -euo pipefail
+          COMMITS=$(git rev-list --count HEAD)
+          echo "commits examined: $COMMITS"
+          # `|| true` is load-bearing. grep exits 1 when it matches nothing, and under pipefail
+          # that would fail the build BECAUSE THE HISTORY IS CLEAN. A check that goes red on
+          # success is worse than no check: it teaches you that red means nothing.
+          HITS=$(git log -p --all | grep -acE '(gsk_|AIza|ghp_|github_pat_|sk-ant-|xox[baprs]-)[A-Za-z0-9_-]{20,}' || true)
+          echo "key-shaped strings in history: ${HITS:-0}"
+          [ "${HITS:-0}" = "0" ]
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G3 — ANALYSIS. What do the machines already know that nobody has read?
+      # verify.py first because it costs a second and it is the check most likely to be wrong.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G3 — the structural checks"
+        run: python3 scripts/verify.py
+
+      # A CHECK THAT HAS NEVER BEEN SEEN RED IS A RUMOUR, and this is where it is seen.
+      # Thirteen rules, each broken on purpose, each confirmed to change the file before its
+      # result means anything. It runs on every push because a linter that only runs when you
+      # remember is a linter for the days you did not need it.
+      - name: "Gate G3 — every check seen red, from a confirmed mutation"
+        run: python3 scripts/sabotage.py
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # TEST 1 — the mechanism, alone. On a plain JVM, no emulator, no network, no microphone.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Test 1 — the logic"
+        run: |
+          set -uo pipefail
+          ./gradlew :app:testReleaseUnitTest --no-daemon || true
+          python3 - <<'EOF'
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob("app/build/test-results/testReleaseUnitTest/*.xml")
+          total = fails = errors = 0
+          for f in files:
+              r = ET.parse(f).getroot()
+              total += int(r.get("tests", 0))
+              fails += int(r.get("failures", 0))
+              errors += int(r.get("errors", 0))
+          print(f"result files: {len(files)}   tests run: {total}   failures: {fails}   errors: {errors}")
+          # A zero is a failure of the check until proven otherwise. Assert the suite really ran
+          # rather than merely that it reported nothing wrong.
+          if len(files) == 0: sys.exit("no test results at all: the suite did not run")
+          if total < 60: sys.exit(f"expected at least 60 cases, found {total}")
+          sys.exit(1 if (fails or errors) else 0)
+          EOF
+
+      # One permanent key, kept as an encrypted repository secret, so every build is signed
+      # identically and a new version installs straight over the old one without Android asking
+      # anybody to uninstall anything. Without it G8 is impossible: two builds signed by two
+      # different keys cannot be installed over each other at all.
+      - name: Restore the signing key
+        env:
+          KS: ${{ secrets.MAHA_KEYSTORE }}
+          KS_PW: ${{ secrets.MAHA_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KS:-}" ]; then
+            echo "No keystore secret. This build would not be upgradable in place."
+            exit 1
+          fi
+          echo "$KS" | base64 -d > maha.jks
+          printf 'storeFile=maha.jks\nstorePassword=%s\nkeyAlias=maha\nkeyPassword=%s\n' "$KS_PW" "$KS_PW" > keystore.properties
+          keytool -list -keystore maha.jks -storepass "$KS_PW" | grep -i 'SHA-256' || true
+
+      - name: Build the release APK
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G5 — DEAD LOOPS, counted on the source that was actually built. delivery-gate.md 7.2
+      # asks for the count of loops EXAMINED rather than only the count of problems, because a
+      # grep pointed at the wrong directory and a codebase with no loops print the same thing.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G5 — loops and waits, counted"
+        run: |
+          # Every stage of every pipeline is guarded. A grep that matches nothing exits 1; under
+          # pipefail that fails the assignment and bash -e kills the step before anything is
+          # printed, which is the worst shape a failure can have. MINIMALIST_STOPWATCH walked
+          # into this three times on the same gate.
+          set -uo pipefail
+          SRC=app/src/main/kotlin/com/mantra/mahatranscribe
+          nocount() { "$@" || true; }
+          LOOPS=$( nocount grep -rnE '(while|for|repeat)[[:space:]]*[({]' --include='*.kt' "$SRC" | wc -l)
+          UNBOUNDED=$( nocount grep -rnF 'while (true)' --include='*.kt' "$SRC" | wc -l)
+          TIMEOUTS=$( nocount grep -rnE 'connectTimeout|readTimeout|\.join\(' --include='*.kt' "$SRC" | wc -l)
+          DELAYS=$( nocount grep -rnE 'delay\(|Thread\.sleep\(' --include='*.kt' "$SRC" | wc -l)
+          echo "loops examined:            $LOOPS"
+          echo "written as while(true):    $UNBOUNDED"
+          echo "deadlines on outside waits: $TIMEOUTS"
+          echo "paced waits:               $DELAYS"
+          [ "$UNBOUNDED" = "0" ] || { echo "an unbounded loop is present"; exit 1; }
+          [ "$LOOPS" -ge 8 ] || { echo "fewer loops than exist: this check is broken, not the code"; exit 1; }
+          [ "$TIMEOUTS" -ge 4 ] || { echo "fewer deadlines than exist: this check is broken"; exit 1; }
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G2, second half — THE ARTEFACT ITSELF, scanned as a binary. A key can be compiled in
+      # without ever appearing in a diff anybody looked at.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G2 — scan the built APK"
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "scanning: $APK ($(stat -c%s "$APK") bytes)"
+          HITS=$(strings -a "$APK" | grep -acE '(gsk_|AIza|ghp_|github_pat_|sk-ant-|xox[baprs]-)[A-Za-z0-9_-]{20,}' || true)
+          echo "key-shaped strings in the artefact: ${HITS:-0}"
+          if [ "${HITS:-0}" != "0" ]; then
+            echo "A key shape is present in the artefact. Not printing it. Stopping."
+            exit 1
+          fi
+
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      # G1's last check, and G7's baseline. The version inside the artefact must equal the
+      # version in the name and in the tag. TTT mini's own measurement found gradle.properties
+      # saying 127 while the phone's app list said 1.0, and the number the person can SEE is the
+      # worst of the three to lose.
+      # ─────────────────────────────────────────────────────────────────────────────────────
+      - name: "Gate G1 — the three numbers agree, and G7 baselines"
+        env:
+          V: ${{ steps.provenance.outputs.version }}
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort | tail -1)
+          BADGE=$("$AAPT" dump badging "$APK")
+          CODE=$(echo "$BADGE" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")
+          NAME=$(echo "$BADGE" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          echo "gradle.properties: $V    versionCode: $CODE    versionName: $NAME    tag will be: v$V"
+          [ "$CODE" = "$V" ]
+          [ "$NAME" = "$V" ]
+          echo "APK size: $(stat -c%s "$APK") bytes"
+          echo "permissions requested:"
+          echo "$BADGE" | grep "uses-permission" || true
+
+      # versioning.md 2: the number is written at both ends of the name and the two are the same
+      # number, always. Both come from $V, so a name whose ends disagree is impossible rather than
+      # merely discouraged.
+      #
+      # A DOCUMENTS-ONLY PUSH MUST NOT FAIL THE BUILD, AND MUST NOT SILENTLY DO NOTHING EITHER.
+      # An existing tag is a loud SKIP: it says in as many words that nothing was published and
+      # what to do about it, because the opposite mistake — changing the app, forgetting to bump,
+      # then wondering why the phone still has the old one — is the more expensive of the two.
+      - name: Publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.provenance.outputs.version }}
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          OUT="${V}-maha-transcribe-v${V}.apk"
+          cp "$APK" "$OUT"
+          if gh release view "v${V}" >/dev/null 2>&1; then
+            echo "=============================================================="
+            echo " NOTHING WAS PUBLISHED."
+            echo " appVersion is ${V} and release v${V} already exists."
+            echo " Every gate passed and the APK built cleanly, but this run"
+            echo " produced no artefact anybody can install."
+            echo " If you changed the app, bump appVersion in gradle.properties."
+            echo " If you only changed documents, this is the expected outcome."
+            echo "=============================================================="
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publishing $OUT as tag v${V}"
+          gh release create "v${V}" "$OUT" \
+            --title "Maha Transcribe v${V}" \
+            --notes "The T screen: record, pause, stop, a meter that cannot lie, HR/ENG/AUTO, SINGLE/MULTI, open an audio or video file, and the transcript in a box with copy, undo, redo and clear. Build ${GITHUB_RUN_NUMBER} from $(git rev-parse --short HEAD)."
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      # versioning.md 4: only the last two builds stay. Runs only after publish succeeds, so a
+      # failed build never deletes a good release. There is no way back to a deleted artefact;
+      # the tag and the source survive, the APK does not.
+      - name: Keep the two newest releases
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[2:] | .[].tagName' | while read -r tag; do
+            [ -z "$tag" ] && continue
+            gh release delete "$tag" --yes --cleanup-tag || true
+            echo "removed $tag"
+          done

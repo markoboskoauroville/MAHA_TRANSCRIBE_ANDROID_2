@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- THE ONLY THREE PERMISSIONS, AND EACH ONE IS ARGUED FOR.
+
+         RECORD_AUDIO      the app records a voice. Without it there is no app.
+         INTERNET          the transcript comes from a provider. Nothing else is sent
+                           anywhere: no analytics, nothing to Marko, nothing to anybody.
+         FOREGROUND_*      Android stops giving microphone samples to a backgrounded app.
+                           Without these, switching to WhatsApp mid-sentence silently ends
+                           the recording, with no error, which is the exact failure the
+                           brief names as the worst kind.
+
+         There is deliberately no READ_EXTERNAL_STORAGE: the OPEN control uses the system
+         document picker, which hands back one file the person chose and asks for no standing
+         access to anything else. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Maha">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Maha">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".audio.RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    </application>
+</manifest>
