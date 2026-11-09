@@ -1,3 +1,7 @@
+
+
+## From the former README (9.11.2026)
+
 # Maha Transcribe for Android
 
 Speech becomes text. Text becomes speech. Built native from a description, not ported from the
